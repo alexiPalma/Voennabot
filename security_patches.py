@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 
 
 async def install(botmod):
@@ -7,6 +8,7 @@ async def install(botmod):
     original_handle = botmod.handle_text
     locks = {}
     battle_locks = {}
+    battle_creation_lock = asyncio.Lock()
 
     def user_lock(uid):
         return locks.setdefault(uid, asyncio.Lock())
@@ -27,11 +29,32 @@ async def install(botmod):
                 target_id = int(data.split(':', 1)[1])
             except (ValueError, IndexError):
                 return await c.answer('Некорректная цель.', show_alert=True)
-            for b in botmod.BATTLES.values():
-                if uid in (b['attacker'], b['defender']) or target_id in (b['attacker'], b['defender']):
-                    return await c.answer('❌ Один из игроков уже участвует в другом бою.', show_alert=True)
-            async with user_lock(uid):
-                return await original_callback(c, bot)
+            async with battle_creation_lock:
+                for bid, b in list(botmod.BATTLES.items()):
+                    created = b.get('created_at', 0)
+                    if created and (datetime.now(timezone.utc).timestamp() - created) > 600:
+                        botmod.BATTLES.pop(bid, None)
+                        continue
+                    if uid in (b['attacker'], b['defender']) or target_id in (b['attacker'], b['defender']):
+                        return await c.answer('❌ Один из игроков уже участвует в другом бою.', show_alert=True)
+
+                attacker = await botmod.user(uid)
+                if attacker and attacker['last_attack']:
+                    try:
+                        cooldown = await botmod.get_int('attack_cooldown_minutes')
+                        elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(attacker['last_attack'])).total_seconds()
+                        if elapsed < cooldown * 60:
+                            left = int(cooldown * 60 - elapsed)
+                            return await c.answer(f'⏳ Следующая атака через {left // 60} мин.', show_alert=True)
+                    except (ValueError, TypeError):
+                        pass
+
+                before = set(botmod.BATTLES)
+                async with user_lock(uid):
+                    result = await original_callback(c, bot)
+                for bid in set(botmod.BATTLES) - before:
+                    botmod.BATTLES[bid]['created_at'] = datetime.now(timezone.utc).timestamp()
+                return result
 
         if data.startswith('bconfirm:'):
             try:
@@ -39,7 +62,22 @@ async def install(botmod):
             except (ValueError, IndexError):
                 return await c.answer('Некорректный бой.', show_alert=True)
             async with battle_lock(bid):
-                return await original_callback(c, bot)
+                b = botmod.BATTLES.get(bid)
+                if not b:
+                    return await c.answer('Бой уже завершён или отменён.', show_alert=True)
+                if b.get('created_at') and datetime.now(timezone.utc).timestamp() - b['created_at'] > 600:
+                    botmod.BATTLES.pop(bid, None)
+                    return await c.answer('⏱ Бой просрочен. Создайте новый вызов.', show_alert=True)
+                attacker_id = b['attacker']
+                result = await original_callback(c, bot)
+                # The original implementation applied cooldown only to the winner.
+                # The attacker must always consume the one-hour attack cooldown.
+                if attacker_id:
+                    db = await botmod.connect()
+                    await db.execute('UPDATE users SET last_attack=? WHERE user_id=?', (botmod.now().isoformat(), attacker_id))
+                    await db.commit()
+                    await db.close()
+                return result
 
         return await original_callback(c, bot)
 
