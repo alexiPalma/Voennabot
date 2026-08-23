@@ -5,30 +5,33 @@ Telegram military strategy game. The player enters through `/start`; the rest of
 ## Run
 
 1. Copy `.env.example` to `.env`.
-2. Set `BOT_TOKEN`, `ADMIN_ID` and optionally `CHANNEL_USERNAME`.
+2. Set only `BOT_TOKEN` and `ADMIN_ID`.
 3. Install dependencies: `pip install -r requirements.txt`.
-4. Start: `python bot.py`.
+4. Start the hardened launcher: `python run.py`.
 
 ## Included
 
-- SQLite database with persistent users, army, farm, attacks, promos and battle log.
+- SQLite persistence for users, army, farms, promos, cases, messages and battle logs.
 - Farm levels 1–10 with hourly income and tax blocking.
-- Daily 500,000 bonus.
-- 1,500,000 channel-subscription bonus with membership check.
-- Army shop: infantry, UAVs, interceptor drones, IFVs, tanks, helicopters, aircraft and missiles.
-- One-hour attack cooldown.
-- Combat resolver with the supplied counter probabilities and unit relationships.
-- Losing side loses 20% of its army; winner keeps its army.
-- 5% reward based on the value of units lost by the losing side.
-- Telegram Stars donation packages: 50 → 5,000,000; 100 → 11,000,000; 500 → 100,000,000.
-- Pre-checkout and successful-payment handling for Stars.
-- Inline-button admin panel: player lookup, money, army grants, reset, broadcast, promo codes, statistics, farm/battle/donation settings.
-- No large command list: `/start` is the central entry point.
+- Daily prize table with the configured probabilities.
+- Channel-subscription reward configured from the admin panel.
+- Army shop with quantity confirmation.
+- Cases, including the 50-Star presidential case redirect to the donation screen.
+- Symmetric combat resolver: both armies participate in combat.
+- One active battle per player in the hardened runtime.
+- Losing side loses the configured percentage of its army; winner keeps its army.
+- Configurable winner/loser rewards.
+- Inline-button admin panel with currency, bonuses, cases, promos, earnings, donation text, rules, admins, grants, broadcast, statistics, message editor, farms and battle settings.
+- Database integrity guards against negative balances, negative army counts, invalid farm levels and invalid tax values.
+- Runtime validation for admin amounts, settings and high-value actions.
+- `/start` remains the central user entry point; the extra commands are restricted admin operations.
 
 ## Configuration
 
-`.env.example` contains the required variables. The bot must have permission to check channel membership for the subscription reward.
+`.env` contains only technical secrets. The channel username, bonus values, donation contact and other game settings are stored in SQLite and edited from the admin panel.
+
+The bot must have sufficient Telegram permissions to check channel membership for the subscription reward.
 
 ## Game values
 
-Prices and farm values are centralized in `config.py`, while battle rules are isolated in `combat.py`, so balance changes do not require rewriting the bot UI.
+Prices and farm values are centralized in `config.py`; battle rules are isolated in `combat.py`; runtime safety wrappers are in `security_patches.py` and are loaded by `run.py`.
