@@ -1,93 +1,59 @@
 import random
 from config import UNITS
 
-# A deterministic, transparent combat resolver based on the rules supplied for the game.
-# It never creates units and only removes units that the defender/attacker actually owns.
-
 def roll(p): return random.random() < p
-
-def destroy(state, unit, amount):
-    n=min(max(0,int(amount)), state.get(unit,0)); state[unit]-=n; return n
+def destroy(s,u,n):
+    n=min(max(0,int(n)),s.get(u,0)); s[u]=s.get(u,0)-n; return n
 
 def resolve(attacker, defender):
-    a={k:attacker[k] for k in UNITS}; d={k:defender[k] for k in UNITS}; events=[]
-
-    # Missiles: one missile can hit the specified target groups. Each missile is consumed.
-    missiles=destroy(a,'missile',a['missile'])
-    for _ in range(missiles):
-        # The game specifies alternatives; one missile chooses one primary ground target.
-        target=random.choice(['soldier','bmp','tank'])
-        if target=='soldier': killed=destroy(d,'soldier',350); events.append(f'🚀 Ракета уничтожила {killed} пехоты')
-        elif target=='bmp': killed=destroy(d,'bmp',22); events.append(f'🚀 Ракета уничтожила {killed} БМП')
-        else:
-            killed=destroy(d,'tank',random.randint(7,10)); events.append(f'🚀 Ракета уничтожила {killed} танков')
-        if d['helicopter'] and roll(.70): destroy(d,'helicopter',1); events.append('🚀 Ракета сбила вертолёт (70%)')
-
-    # Planes: each plane attempts one listed strike. Plane-v-plane is a 45% counter.
-    planes=destroy(a,'plane',a['plane'])
-    for _ in range(planes):
-        if d['plane'] and roll(.45): destroy(d,'plane',1); events.append('✈️ Самолёт сбил самолёт (45%)'); continue
-        if not roll(.70): continue
-        choices=[]
-        if d['soldier']: choices.append(('soldier',150))
-        if d['bmp']: choices.append(('bmp',18))
-        if d['tank']: choices.append(('tank',6))
-        if d['drone']: choices.append(('drone',50))
-        if d['helicopter']: choices.append(('helicopter',1))
+    a={k:int(attacker[k]) for k in UNITS}; d={k:int(defender[k]) for k in UNITS}; events=[]
+    # Missiles
+    for _ in range(a['missile']):
+        targets=[('soldier',350),('bmp',22),('tank',random.randint(7,10))]
+        if d['soldier'] or d['bmp'] or d['tank']:
+            available=[x for x in targets if d[x[0]]>0]; unit,n=random.choice(available); killed=destroy(d,unit,n); events.append(f'🚀 Ракета уничтожила {killed} {UNITS[unit]["title"]}')
+        if d['helicopter'] and roll(.70): destroy(d,'helicopter',1); events.append('🚀 Ракета сбила вертолёт — 70%')
+    # Planes
+    for _ in range(a['plane']):
+        if d['plane'] and roll(.45): destroy(d,'plane',1); events.append('✈️ Самолёт сбил самолёт — 45%'); continue
+        if not roll(.70): events.append('✈️ Самолёт не прошёл удар — 30%'); continue
+        choices=[x for x in [('soldier',150),('bmp',18),('tank',6),('drone',50),('helicopter',1)] if d[x[0]]>0]
         if choices:
-            unit,n=random.choice(choices); killed=destroy(d,unit,n); events.append(f'✈️ Самолёт уничтожил {killed} {UNITS[unit]["title"]} (70%)')
-
-    # Helicopters: one helicopter chooses one of the listed targets.
-    helis=destroy(a,'helicopter',a['helicopter'])
-    for _ in range(helis):
-        if d['helicopter'] and roll(.70): destroy(d,'helicopter',1); events.append('🚁 Вертолёт сбил вертолёт (70%)'); continue
-        choices=[]
-        if d['soldier']: choices.append(('soldier',80))
-        if d['bmp']: choices.append(('bmp',10))
-        if d['tank']: choices.append(('tank',3))
-        if d['drone']: choices.append(('drone',20))
+            unit,n=random.choice(choices); killed=destroy(d,unit,n); events.append(f'✈️ Самолёт уничтожил {killed} {UNITS[unit]["title"]} — 70%')
+    # Helicopters
+    for _ in range(a['helicopter']):
+        if d['helicopter'] and roll(.70): destroy(d,'helicopter',1); events.append('🚁 Вертолёт сбил вертолёт — 70%'); continue
+        choices=[x for x in [('soldier',80),('bmp',10),('tank',3),('drone',20)] if d[x[0]]>0]
         if choices:
             unit,n=random.choice(choices); killed=destroy(d,unit,n); events.append(f'🚁 Вертолёт уничтожил {killed} {UNITS[unit]["title"]}')
-
-    # Tanks: tank-v-tank 70%; otherwise tank attacks up to 2 BMP or 40 infantry.
-    tanks=destroy(a,'tank',a['tank'])
-    for _ in range(tanks):
-        if d['tank'] and roll(.70): destroy(d,'tank',1); events.append('🛡 Танк уничтожил танк (70%)'); continue
-        if d['bmp']: killed=destroy(d,'bmp',2); events.append(f'🛡 Танк уничтожил {killed} БМП')
-        elif d['soldier']: killed=destroy(d,'soldier',40); events.append(f'🛡 Танк уничтожил {killed} пехоты')
-
-    # BMPs: 90% BMP-v-BMP, and a 65% three-BMP attempt against one tank.
-    bmps=destroy(a,'bmp',a['bmp'])
-    groups=bmps//3
-    for _ in range(groups):
-        if d['tank'] and roll(.65): destroy(d,'tank',1); events.append('🚙 3 БМП уничтожили танк (65%)')
-    for _ in range(bmps):
-        if d['bmp'] and roll(.90): destroy(d,'bmp',1); events.append('🚙 БМП уничтожила БМП (90%)')
-        elif d['soldier']: killed=destroy(d,'soldier',10); events.append(f'🚙 БМП уничтожила {killed} пехоты')
-
-    # Drones: 30 drones vs helicopter at 80%; drones do not counter drones.
-    drone_groups=a['drone']//30
-    for _ in range(drone_groups):
-        if d['helicopter'] and roll(.80): destroy(d,'helicopter',1); events.append('🛩 30 БПЛА сбили вертолёт (80%)')
-
-    # Interceptors: each has 5% against one drone.
-    ints=destroy(a,'interceptor',a['interceptor'])
-    for _ in range(ints):
-        if d['drone'] and roll(.05): destroy(d,'drone',1); events.append('🎯 Перехватчик сбил БПЛА (5%)')
-
-    # Infantry: 7 infantry has 70% against one drone, and infantry only directly counters infantry.
+    # Tanks
+    for _ in range(a['tank']):
+        if d['tank'] and roll(.70): destroy(d,'tank',1); events.append('🛡 Танк уничтожил танк — 70%'); continue
+        if d['bmp']: destroy(d,'bmp',2); events.append('🛡 Танк уничтожил до 2 БМП')
+        elif d['soldier']: destroy(d,'soldier',40); events.append('🛡 Танк уничтожил до 40 пехоты')
+    # BMP
+    for _ in range(a['bmp']//3):
+        if d['tank'] and roll(.65): destroy(d,'tank',1); events.append('🚙 3 БМП контрят танк — 65%')
+    for _ in range(a['bmp']):
+        if d['bmp'] and roll(.90): destroy(d,'bmp',1); events.append('🚙 БМП контрит БМП — 90%')
+        elif d['soldier']: destroy(d,'soldier',10); events.append('🚙 БМП уничтожила до 10 пехоты')
+    # Drones: 2 drones counter 15 infantry; 30 drones counter helicopter at 80%; drones never counter drones.
+    for _ in range(a['drone']//2):
+        if d['soldier']: destroy(d,'soldier',15); events.append('🛩 2 БПЛА уничтожили до 15 пехоты')
+    for _ in range(a['drone']//30):
+        if d['helicopter'] and roll(.80): destroy(d,'helicopter',1); events.append('🛩 30 БПЛА сбили вертолёт — 80%')
+    # Interceptors
+    for _ in range(a['interceptor']):
+        if d['drone'] and roll(.05): destroy(d,'drone',1); events.append('🎯 Перехватчик сбил БПЛА — 5%')
+    # Infantry: only infantry directly, plus 7 infantry -> drone at 70%.
     for _ in range(a['soldier']//7):
-        if d['drone'] and roll(.70): destroy(d,'drone',1); events.append('🪖 7 пехотинцев сбили БПЛА (70%)')
-    # Soldier-v-soldier is intentionally 1-for-1.
-    if d['soldier'] and a['soldier']:
-        killed=min(a['soldier'],d['soldier']); destroy(d,'soldier',killed); events.append(f'🪖 Пехота против пехоты: {killed} уничтожено')
-
-    # 15 soldiers -> 1 BMP as a combat counter; apply remaining grouped infantry after direct infantry combat.
+        if d['drone'] and roll(.70): destroy(d,'drone',1); events.append('🪖 7 пехотинцев сбили БПЛА — 70%')
+    if a['soldier'] and d['soldier']:
+        n=min(a['soldier'],d['soldier']); destroy(d,'soldier',n); events.append(f'🪖 Пехота против пехоты: {n}')
+    # 15 infantry -> 1 BMP as the stated infantry counter ratio.
     for _ in range(a['soldier']//15):
         if d['bmp']: destroy(d,'bmp',1); events.append('🪖 15 пехотинцев уничтожили БМП')
-
-    # Any attacker unit already consumed above is represented by the remaining a state.
-    # Winner is based on whether the defender still has combat units.
-    defender_left=sum(d.values()); attacker_left=sum(a.values())
-    winner='attacker' if defender_left==0 and attacker_left>0 else ('defender' if attacker_left==0 and defender_left>0 else ('attacker' if attacker_left>defender_left else 'defender'))
+    # Artillery is included in army composition and losses; its combat effects are intentionally not invented until a damage rule is supplied.
+    combat_d=sum(d[k] for k in UNITS if k!='artillery'); combat_a=sum(a[k] for k in UNITS if k!='artillery')
+    winner='attacker' if combat_d==0 and combat_a>0 else ('defender' if combat_a==0 and combat_d>0 else ('attacker' if combat_a>combat_d else 'defender'))
     return a,d,winner,events
