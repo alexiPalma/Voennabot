@@ -10,6 +10,23 @@ async def install(botmod):
     battle_locks = {}
     battle_creation_lock = asyncio.Lock()
 
+    async def sync_runtime_settings():
+        # The original UI imports config objects once. Mutate those objects in place so
+        # admin-panel changes immediately affect the running bot without a restart.
+        for level in range(1, 11):
+            income = await botmod.get_int(f'farm_{level}_income')
+            botmod.FARMS[level]['income'] = income
+            if level >= 2:
+                botmod.FARMS[level]['upgrade'] = await botmod.get_int(f'farm_{level}_upgrade')
+        for key in botmod.UNITS:
+            setting_key = f'price_{key}'
+            if await botmod.setting(setting_key) is not None:
+                botmod.UNITS[key]['price'] = await botmod.get_int(setting_key)
+        for stars in (50, 100, 500):
+            value = await botmod.setting(f'donate_{stars}')
+            if value is not None:
+                botmod.DONATIONS[stars] = int(value)
+
     def user_lock(uid):
         return locks.setdefault(uid, asyncio.Lock())
 
@@ -22,6 +39,7 @@ async def install(botmod):
         protected = data in {'daily', 'sub', 'payout', 'paytax', 'upgrade'} or data.startswith(('buyok:', 'case:'))
         if protected:
             async with user_lock(uid):
+                await sync_runtime_settings()
                 return await original_callback(c, bot)
 
         if data.startswith('target:'):
@@ -70,7 +88,6 @@ async def install(botmod):
                     return await c.answer('⏱ Бой просрочен. Создайте новый вызов.', show_alert=True)
                 attacker_id = b['attacker']
                 result = await original_callback(c, bot)
-                # Apply cooldown to the attacker only after the battle actually finished.
                 if bid not in botmod.BATTLES:
                     db = await botmod.connect()
                     await db.execute('UPDATE users SET last_attack=? WHERE user_id=?', (botmod.now().isoformat(), attacker_id))
@@ -78,6 +95,7 @@ async def install(botmod):
                     await db.close()
                 return result
 
+        await sync_runtime_settings()
         return await original_callback(c, bot)
 
     async def secure_handle(message, bot):
@@ -115,7 +133,6 @@ async def install(botmod):
                 if amount <= 0 or uses <= 0 or amount > 10**15 or uses > 10**9:
                     return await message.answer('❌ Некорректная сумма или лимит использований.')
 
-        # The original UI had buttons for adding/removing admins but no text-state handler.
         if state and state[0] in {'admin_add', 'admin_del'}:
             if not await botmod.admin_check(uid):
                 botmod.STATE.pop(uid, None)
@@ -150,6 +167,7 @@ async def install(botmod):
                 'donate_50','donate_100','donate_500','currency_rate',
                 *{f'farm_{i}_income' for i in range(1, 11)},
                 *{f'farm_{i}_upgrade' for i in range(2, 11)},
+                *{f'price_{k}' for k in botmod.UNITS},
             }
             if key in numeric:
                 try:
