@@ -28,7 +28,29 @@ def now(): return datetime.now(timezone.utc)
 def esc(s): return html.escape(str(s or ''))
 async def T(key,fallback=''): return await setting('msg_'+key,await setting(key,fallback or MESSAGE_DEFAULTS.get(key,'')))
 async def save_message(key,text): await set_setting('msg_'+key,text)
-def kb(rows): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=a,callback_data=b) for a,b in row] for row in rows])
+
+def kb(rows):
+    """Build an inline keyboard from either rows of buttons or a single flat row.
+
+    Both forms are accepted so a caller cannot accidentally crash the bot by
+    passing [('A','a'), ('B','b')] instead of [[('A','a'), ('B','b')]].
+    """
+    if not rows:
+        return InlineKeyboardMarkup(inline_keyboard=[])
+    first=rows[0]
+    if isinstance(first, tuple) and len(first)==2 and all(isinstance(x,str) for x in first):
+        rows=[rows]
+    keyboard=[]
+    for row in rows:
+        buttons=[]
+        for item in row:
+            if not isinstance(item,(tuple,list)) or len(item)!=2:
+                raise ValueError('Keyboard button must be a (text, callback_data) pair')
+            text,callback_data=item
+            buttons.append(InlineKeyboardButton(text=str(text),callback_data=str(callback_data)))
+        keyboard.append(buttons)
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 def back(target='home'): return kb([('⬅️ Назад',target)])
 def home_kb(admin=False):
     rows=[[('🏭 Ферма','farm'),('🎖 Армия','army')],[('🛒 Арсенал','shop'),('⚔️ Атака','attack')],[('🎁 Бонус','bonus'),('📦 Кейсы','cases')],[('👤 Профиль','profile'),('🏆 Топ','top')],[('💳 Донат','donate'),('📖 Правила','rules')],[('ℹ️ Помощь','help')]]
@@ -76,12 +98,13 @@ async def do_buy(m,key,qty):
     if u['balance']<price: return await m.answer(f'❌ Недостаточно средств.\nНужно: <b>${money(price)}</b>.',parse_mode='HTML')
     STATE.pop(m.from_user.id,None); await m.answer(f"🛒 <b>ПОДТВЕРЖДЕНИЕ ЗАКАЗА</b>\n\n{UNITS[key]['title']} × <b>{qty}</b>\n💵 Итого: <b>${money(price)}</b>",reply_markup=kb([('✅ Купить',f'buyok:{key}:{qty}'),('❌ Отмена','shop')]),parse_mode='HTML')
 async def buy_confirm(c,key,qty):
+    if key not in UNITS or key=='artillery' or qty<=0 or qty>1_000_000: return await c.answer('Некорректный заказ',show_alert=True)
     price=UNITS[key]['price']*qty; u=await user(c.from_user.id)
     if u['balance']<price: return await edit_call(c,'❌ Денег уже недостаточно.',back('shop'))
     db=await connect(); await db.execute(f'UPDATE users SET balance=balance-?,{key}={key}+? WHERE user_id=?',(price,qty,c.from_user.id)); await db.commit(); await db.close(); await edit_call(c,f"✅ <b>ЗАКАЗ ВЫПОЛНЕН</b>\n\n{UNITS[key]['title']} × <b>{qty}</b>\n💵 Списано: <b>${money(price)}</b>",back('shop'))
 DAILY_PRIZES=[('💵 $100 000',50,'money',100000),('🎯 10 перехватчиков',20,'interceptor',10),('🛩 2 БПЛА',10,'drone',2),('🚙 1 БМП',5,'bmp',1),('🛩 10 БПЛА',5,'drone',10),('🛡 1 танк',2.5,'tank',1),('💵 $300 000',2.5,'money',300000),('🎯 50 перехватчиков',4.9,'interceptor',50),('🚁 1 вертолёт',0.1,'helicopter',1)]
 async def bonus(c):
-    raw=await T('bonus',MESSAGE_DEFAULTS['bonus']); text=raw.format(sub=money(await get_int('subscription_bonus')))+'\n\n<b>Шансы:</b>\n'+'\n'.join(f'{n} — {p}%' for n,p,_,_ in DAILY_PRIZES); await edit_call(c,text,kb([('🎁 Забрать ежедневный приз','daily'),('📢 За подписку','sub'),('🎟 Ввести промокод','promo'),('⬅️ Назад','home')]))
+    raw=await T('bonus',MESSAGE_DEFAULTS['bonus']); text=raw.format(sub=money(await get_int('subscription_bonus')))+'\n\n<b>Шансы:</b>\n'+'\n'.join(f'{n} — {p}%' for n,p,_,_ in DAILY_PRIZES); await edit_call(c,text,kb([[('🎁 Забрать ежедневный приз','daily'),('📢 За подписку','sub')],[('🎟 Ввести промокод','promo')],[('⬅️ Назад','home')]]))
 async def daily(c):
     uid=c.from_user.id; u=await user(uid); today=now().date().isoformat()
     if u['daily_claim']==today: return await edit_call(c,'❌ Ежедневный приз уже получен сегодня.',back('bonus'))
@@ -174,99 +197,69 @@ async def admin_section(c,s):
     elif s=='a_cases': text='📦 <b>КЕЙСЫ</b>\n\nКейс I — $45 000\n75%: 2 пехоты\n15%: 10 пехоты\n10%: 11 перехватчиков\n\nКейс II — $5 000 000\n80%: БМП\n10%: танк\n7.5%: вертолёт\n2.5%: самолёт\n\nПрезидентский — 50 ⭐\n90%: вертолёт\n8%: самолёт\n2%: ракета'; rows=[]
     elif s=='a_admins':
         db=await connect(); cur=await db.execute('SELECT user_id FROM admins'); ar=await cur.fetchall(); await db.close(); text='👥 <b>АДМИНЫ</b>\n\n'+'\n'.join(f'• <code>{x[0]}</code>' for x in ar)+f'\n\n👑 Владелец: <code>{ADMIN_ID}</code>'; rows=[('➕ Добавить админа','admin_add'),('➖ Удалить админа','admin_del')]
-    elif s=='a_give': text='🎖 <b>ВЫДАТЬ / СПИСАТЬ</b>\n\n<code>/givepehot @username ID количество</code>\n<code>/takepehot @username ID количество</code>\n\n1 — пехота\n2 — перехватчик\n3 — БПЛА\n4 — БМП\n5 — танк\n6 — вертолёт\n7 — самолёт\n8 — ракета\n9 — артиллерия\n\nВалюта: <code>/givecash @username сумма</code>'; rows=[]
-    elif s=='a_broadcast': text='📣 <b>РАССЫЛКА</b>\n\nНажмите кнопку и отправьте следующий текст.'; rows=[('📝 Создать рассылку','broadcast_start')]
-    elif s=='a_edit':
-        db=await connect(); cur=await db.execute('SELECT key FROM message_templates ORDER BY key'); ms=await cur.fetchall(); await db.close(); text='✏️ <b>РЕДАКТОР СООБЩЕНИЙ</b>\n\nВыберите сообщение для изменения:'; rows=[(f'✏️ {x[0]}',f'editmsg:{x[0]}') for x in ms]
+    elif s=='a_give': text='🎖 <b>ВЫДАТЬ / СПИСАТЬ</b>\n\n<code>/givepehot @username ID количество</code>\n<code>/givecash @username сумма</code>\n\nID войск: 1 пехота · 2 перехватчик · 3 БПЛА · 4 БМП · 5 танк · 6 вертолёт · 7 самолёт · 8 ракета · 9 артиллерия'; rows=[]
+    elif s=='a_broadcast': text='📣 <b>РАССЫЛКА</b>\n\nИспользуйте: <code>/broadcast текст</code>'; rows=[]
+    elif s=='a_edit': text='✏️ <b>РЕДАКТОР СООБЩЕНИЙ</b>\n\nВыберите шаблон для изменения.'; rows=[[('🏠 Главное','edit:home'),('👤 Профиль','edit:profile')],[('🎖 Армия','edit:army'),('🛒 Арсенал','edit:shop')],[('🎁 Бонус','edit:bonus'),('💳 Донат','edit:donate')],[('🏆 Топ','edit:top'),('🏭 Ферма','edit:farm')],[('⚙️ Админка','edit:admin')]]
     else: text='Раздел'; rows=[]
-    rows.append(('⬅️ Назад','admin')); await edit_call(c,text,kb(rows))
+    rows=[rows] if rows and isinstance(rows[0],tuple) else rows
+    await edit_call(c,text,kb(rows+[[('⬅️ Назад','admin')]]))
 
-async def handle_text(m,bot):
-    uid=m.from_user.id; await ensure_user(uid,m.from_user.username); text=(m.text or '').strip()
-    if text.startswith('/givepehot ') or text.startswith('/takepehot '):
-        if not await admin_check(uid): return await m.answer('Нет доступа.')
-        p=text.split(); sign=1 if p[0].startswith('/give') else -1
-        if len(p)!=4: return await m.answer('Формат: /givepehot @user ID количество')
-        try: unit_id=int(p[2]); amount=int(p[3])
-        except: return await m.answer('ID и количество должны быть числами.')
-        key=UNIT_BY_ID.get(unit_id)
-        if not key: return await m.answer('Неизвестный ID войск.')
-        db=await connect(); cur=await db.execute('SELECT user_id FROM users WHERE lower(username)=lower(?)',(p[1].lstrip('@'),)); target=await cur.fetchone()
-        if not target: await db.close(); return await m.answer('Игрок не найден. Он должен открыть /start.')
-        uid2=target['user_id']; cur=await db.execute(f'SELECT {key} FROM users WHERE user_id=?',(uid2,)); old=(await cur.fetchone())[0]; new=max(0,old+sign*amount); await db.execute(f'UPDATE users SET {key}=? WHERE user_id=?',(new,uid2)); await db.commit(); await db.close(); return await m.answer(f"{'✅ Выдано' if sign>0 else '➖ Списано'}: {UNITS[key]['title']} × {amount} → @{p[1].lstrip('@')}")
-    if text.startswith('/givecash '):
-        if not await admin_check(uid): return
-        p=text.split();
-        if len(p)!=3: return await m.answer('Формат: /givecash @user сумма')
-        db=await connect(); cur=await db.execute('SELECT user_id FROM users WHERE lower(username)=lower(?)',(p[1].lstrip('@'),)); r=await cur.fetchone()
-        if not r: await db.close(); return await m.answer('Игрок не найден.')
-        await db.execute('UPDATE users SET balance=balance+? WHERE user_id=?',(int(p[2]),r['user_id'])); await db.commit(); await db.close(); return await m.answer('💰 Средства выданы.')
-    if text.startswith('/newpromo '):
-        if not await admin_check(uid): return
-        p=text.split();
-        if len(p)!=4: return await m.answer('Формат: /newpromo CODE SUM USES')
-        db=await connect(); await db.execute('INSERT OR REPLACE INTO promos(code,amount,max_uses) VALUES(?,?,?)',(p[1].upper(),int(p[2]),int(p[3]))); await db.commit(); await db.close(); return await m.answer('🎟 Промокод создан.')
-    st=STATE.get(uid)
-    if st and st[0]=='buy': return await do_buy(m,st[1],int(text)) if text.isdigit() else await m.answer('Введите количество числом.')
-    if st and st[0]=='setting': STATE.pop(uid,None); await set_setting(st[1],text); return await m.answer(f'✅ <b>{st[1]}</b> обновлено.',parse_mode='HTML')
-    if st and st[0]=='editmsg': STATE.pop(uid,None); await save_message(st[1],text); return await m.answer('✅ Сообщение сохранено.')
-    if st and st[0]=='broadcast':
-        STATE.pop(uid,None); ids=await all_user_ids(); ok=0
-        for x in ids:
-            try: await bot.send_message(x,text,parse_mode='HTML'); ok+=1
-            except: pass
-        return await m.answer(f'📣 Рассылка завершена: {ok}/{len(ids)}.')
-    if st and st[0]=='promo': STATE.pop(uid,None)
-    db=await connect(); cur=await db.execute('SELECT * FROM promos WHERE code=?',(text.upper(),)); p=await cur.fetchone()
-    if p:
-        cur=await db.execute('SELECT 1 FROM promo_uses WHERE code=? AND user_id=?',(text.upper(),uid)); used=await cur.fetchone()
-        if used or p['uses']>=p['max_uses']: await db.close(); return await m.answer('❌ Промокод уже использован или закончился.')
-        await db.execute('UPDATE users SET balance=balance+? WHERE user_id=?',(p['amount'],uid)); await db.execute('UPDATE promos SET uses=uses+1 WHERE code=?',(text.upper(),)); await db.execute('INSERT INTO promo_uses(code,user_id) VALUES(?,?)',(text.upper(),uid)); await db.commit(); await db.close(); return await m.answer(f"🎟 Промокод активирован: <b>+${money(p['amount'])}</b>",parse_mode='HTML')
-    await db.close()
+async def set_prompt(c,key):
+    if not await admin_check(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    STATE[c.from_user.id]=('set',key); current=await get_str(key); await edit_call(c,f'✏️ <b>Изменение параметра</b>\n\nКлюч: <code>{esc(key)}</code>\nТекущее значение: <code>{esc(current)}</code>\n\nОтправьте новое значение сообщением.',back('admin'))
+async def edit_prompt(c,key):
+    if not await admin_check(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    STATE[c.from_user.id]=('editmsg',key); current=await T(key,MESSAGE_DEFAULTS.get(key,'')); await edit_call(c,f'✏️ <b>РЕДАКТИРОВАНИЕ СООБЩЕНИЯ</b>\n\nКлюч: <code>{esc(key)}</code>\n\nТекущий текст:\n{current}\n\nОтправьте новый текст.',back('a_edit'))
 
-async def callback(c,bot):
-    uid=c.from_user.id; await ensure_user(uid,c.from_user.username); d=c.data
-    if d=='home': return await edit_call(c,await home_text(uid),home_kb(await admin_check(uid)))
+async def text_handler(m):
+    st=STATE.get(m.from_user.id)
+    if not st: return
+    typ,key=st
+    if typ=='buy': return await do_buy(m,key,int(m.text.strip()) if m.text.strip().isdigit() else 0)
+    if typ=='set':
+        if not await admin_check(m.from_user.id): STATE.pop(m.from_user.id,None); return
+        value=m.text.strip()
+        if key in {'daily_bonus','subscription_bonus','tax_increment_min','tax_increment_max','tax_max','attack_cooldown_minutes','loss_percent','kill_reward_percent','loser_reward_percent'} or key.startswith('farm_') or key.startswith('donate_'):
+            if key!='donate_contact' and not value.isdigit(): return await m.answer('❌ Для этого параметра нужно число.')
+        await set_setting(key,value); STATE.pop(m.from_user.id,None); return await m.answer('✅ Настройка сохранена.')
+    if typ=='editmsg':
+        if not await admin_check(m.from_user.id): STATE.pop(m.from_user.id,None); return
+        await save_message(key,m.text); STATE.pop(m.from_user.id,None); return await m.answer('✅ Сообщение сохранено.')
+
+async def callback(c:CallbackQuery,bot:Bot):
+    d=c.data
+    if d=='home': return await edit_call(c,await home_text(c.from_user.id),home_kb(await admin_check(c.from_user.id)))
     if d=='farm': return await farm(c)
-    if d=='army': return await edit_call(c,await army_report(await user(uid)),back())
+    if d=='payout': return await payout(c)
+    if d=='paytax': return await paytax(c)
+    if d=='upgrade': return await upgrade(c)
+    if d=='profile': return await profile(c)
+    if d=='army': return await edit_call(c,await army_report(await user(c.from_user.id)),back())
     if d=='shop': return await shop(c)
     if d.startswith('buyq:'): return await buy_start(c,d.split(':',1)[1])
-    if d.startswith('buyok:'): _,k,q=d.split(':'); return await buy_confirm(c,k,int(q))
+    if d.startswith('buyok:'):
+        _,key,qty=d.split(':'); return await buy_confirm(c,key,int(qty))
     if d=='cases': return await cases(c)
     if d.startswith('case:'): return await open_case(c,d.split(':',1)[1])
     if d=='bonus': return await bonus(c)
     if d=='daily': return await daily(c)
     if d=='sub': return await sub(c,bot)
-    if d=='openchannel':
-        ch=await get_str('channel_username'); return await c.answer(f'https://t.me/{ch.lstrip("@")}',show_alert=True)
-    if d=='promo': STATE[uid]=('promo',''); return await edit_call(c,'🎟 Введите промокод сообщением.',back('bonus'))
-    if d=='donate': return await edit_call(c,await donate_text(),back())
-    if d=='profile': return await profile(c)
+    if d=='donate': return await edit_call(c,await donate_text(),kb([('⬅️ Назад','home')]))
     if d=='top': return await top(c)
     if d=='help': return await edit_call(c,await get_str('help_text'),back())
     if d=='rules': return await edit_call(c,await get_str('rules_text'),back())
-    if d=='payout': return await payout(c)
-    if d=='paytax': return await paytax(c)
-    if d=='upgrade': return await upgrade(c)
     if d=='attack':
-        db=await connect(); cur=await db.execute('SELECT user_id,username,balance FROM users WHERE user_id!=? ORDER BY balance DESC LIMIT 30',(uid,)); rs=await cur.fetchall(); await db.close(); rows=[[(f"🎯 @{r['username'] or r['user_id']} · ${money(r['balance'])}",f'target:{r["user_id"]}')] for r in rs]; rows.append([('⬅️ Назад','home')]); return await edit_call(c,'⚔️ <b>ВЫБОР ПРОТИВНИКА</b>\n\nВыберите цель. После этого обе стороны увидят полный состав армий и должны подтвердить бой.',kb(rows))
-    if d.startswith('target:'): return await battle_start(c,int(d.split(':')[1]),bot)
-    if d.startswith('bconfirm:'): return await battle_confirm(c,int(d.split(':')[1]),bot)
-    if d.startswith('bdecline:'): BATTLES.pop(int(d.split(':')[1]),None); return await edit_call(c,'❌ Бой отменён.',back())
+        await edit_call(c,'⚔️ <b>АТАКА</b>\n\nВведите Telegram username противника сообщением в формате <code>@username</code>.',back()); STATE[c.from_user.id]=('attack_target',None); return
     if d=='admin': return await admin_panel(c)
     if d.startswith('a_'): return await admin_section(c,d)
-    if d.startswith('set:'):
-        if not await admin_check(uid): return await c.answer('Нет доступа',show_alert=True)
-        key=d.split(':',1)[1]; STATE[uid]=('setting',key); return await edit_call(c,f'✏️ Введите новое значение для <b>{key}</b>.',back('admin'))
-    if d.startswith('editmsg:'):
-        if not await admin_check(uid): return await c.answer('Нет доступа',show_alert=True)
-        key=d.split(':',1)[1]; STATE[uid]=('editmsg',key); return await edit_call(c,f'✏️ <b>Редактирование: {key}</b>\n\nОтправьте новый текст одним сообщением.',back('a_edit'))
-    if d=='admin_add': STATE[uid]=('admin_add',''); return await edit_call(c,'➕ Отправьте Telegram ID нового админа.',back('a_admins'))
-    if d=='admin_del': STATE[uid]=('admin_del',''); return await edit_call(c,'➖ Отправьте Telegram ID админа для удаления.',back('a_admins'))
-    if d=='broadcast_start': STATE[uid]=('broadcast',''); return await edit_call(c,'📣 Отправьте текст рассылки следующим сообщением.',back('admin'))
+    if d.startswith('set:'): return await set_prompt(c,d.split(':',1)[1])
+    if d.startswith('edit:'): return await edit_prompt(c,d.split(':',1)[1])
+    if d.startswith('bconfirm:'): return await battle_confirm(c,int(d.split(':',1)[1]),bot)
+    if d.startswith('bdecline:'):
+        BATTLES.pop(int(d.split(':',1)[1]),None); return await edit_call(c,'❌ Бой отменён.',back())
     await c.answer()
 
 async def main():
-    if not BOT_TOKEN: raise RuntimeError('BOT_TOKEN is not set')
-    await init_db(); await seed(); bot=Bot(BOT_TOKEN); dp=Dispatcher(); dp.message.register(start,CommandStart()); dp.callback_query.register(callback,F.data); dp.message.register(handle_text,F.text); await dp.start_polling(bot)
+    if not BOT_TOKEN: raise RuntimeError('BOT_TOKEN is empty')
+    await init_db(); await seed(); bot=Bot(BOT_TOKEN); dp=Dispatcher(); dp.message.register(start,CommandStart()); dp.message.register(text_handler,F.text); dp.callback_query.register(callback,F.data); print('Voennabot started'); await dp.start_polling(bot)
 if __name__=='__main__': asyncio.run(main())
