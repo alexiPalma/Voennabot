@@ -70,9 +70,8 @@ async def install(botmod):
                     return await c.answer('⏱ Бой просрочен. Создайте новый вызов.', show_alert=True)
                 attacker_id = b['attacker']
                 result = await original_callback(c, bot)
-                # The original implementation applied cooldown only to the winner.
-                # The attacker must always consume the one-hour attack cooldown.
-                if attacker_id:
+                # Apply cooldown to the attacker only after the battle actually finished.
+                if bid not in botmod.BATTLES:
                     db = await botmod.connect()
                     await db.execute('UPDATE users SET last_attack=? WHERE user_id=?', (botmod.now().isoformat(), attacker_id))
                     await db.commit()
